@@ -10,9 +10,14 @@ var (
 	db  *sql.DB
 )
 
-func deferClosure() {
+func returnTarget() *sql.Rows {
 	rows, _ := db.Query("SELECT name FROM users")
-	defer func() {
-		rows.Close()
-	}()
+	return rows
+}
+
+func returnTest() {
+	rows := returnTarget()
+	rows.Close()
+	rows = returnTarget() // want ".*not closed!"
+	returnTarget()        // want ".*not closed!"
 }

@@ -50,6 +50,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 type checkItem struct {
 	// v is the value to be checked
 	v        ssa.Value
+	tp       string
 	pos      token.Pos
 	refs     []ssa.Instruction
 	reported *bool
@@ -59,7 +60,7 @@ type checkItem struct {
 }
 
 func (i *checkItem) report(pass *analysis.Pass) {
-	pass.Reportf(i.pos, "%s not closed!", i.v.Type())
+	pass.Reportf(i.pos, "%s not closed!", i.tp)
 	*i.reported = true
 }
 
@@ -144,6 +145,7 @@ func checkFunc(
 					}
 					presetCheckItem := &checkItem{
 						v:        f.Params[argIdx],
+						tp:       item.tp,
 						pos:      item.pos,
 						reported: item.reported,
 					}
@@ -179,6 +181,7 @@ func checkFunc(
 								continue
 							}
 							presetCheckItem.v = unOp
+							presetCheckItem.tp = unOp.Type().String()
 							break
 						}
 
@@ -190,6 +193,9 @@ func checkFunc(
 					if isDeferClosure(v) {
 						continue mustCloseLoop
 					}
+				case *ssa.Return:
+					// caller will find the target by getCheckItemFromCall
+					continue mustCloseLoop
 				}
 			}
 			if !trySpreadToSuccBlocks(b, item) {
@@ -236,6 +242,9 @@ func trySpreadToSuccBlocks(b *ssa.BasicBlock, item *checkItem) bool {
 	if len(b.Succs) == 0 {
 		return false
 	}
+	if len(item.refs) == 0 {
+		return false
+	}
 
 	if trySpreadCtorErrBranch(b, item) {
 		return true
@@ -267,6 +276,7 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 		ctorErrIdx = -1
 		target     ssa.Value
 		ctorErr    ssa.Value
+		targetTp   string
 	)
 	for i := 0; i < results.Len(); i++ {
 		tp := results.At(i).Type()
@@ -275,6 +285,7 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 		}
 
 		if resolveInTypes(tp, targetTypes) {
+			targetTp = tp.String()
 			targetIdx = i
 		}
 	}
@@ -284,25 +295,26 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 	}
 
 	for _, ref := range *call.Referrers() {
-		switch i := ref.(type) {
+		switch instr := ref.(type) {
 		case *ssa.Extract:
-			switch i.Index {
+			switch instr.Index {
 			case targetIdx:
-				target = i
+				target = instr
 			case ctorErrIdx:
-				ctorErr = i
+				ctorErr = instr
 			}
-		default:
-			// TODO: check it
+		case *ssa.Call:
+			target = call
 		}
 	}
 
 	ret := &checkItem{
 		v:        target,
+		tp:       targetTp,
 		pos:      call.Pos(),
 		reported: new(bool),
 	}
-	if ret.v.Referrers() != nil {
+	if ret.v != nil && ret.v.Referrers() != nil {
 		ret.refs = *ret.v.Referrers()
 	}
 	if ctorErrIdx != -1 {

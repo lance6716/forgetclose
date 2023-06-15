@@ -33,3 +33,15 @@ func funcTest() {
 	rows, _ = db.Query("SELECT name FROM users") // want ".*not closed!"
 	readNotClose(rows)
 }
+
+func returnTarget() *sql.Rows {
+	rows, _ := db.Query("SELECT name FROM users")
+	return rows
+}
+
+func returnTest() {
+	rows := returnTarget()
+	rows.Close()
+	rows = returnTarget() // want ".*not closed!"
+	returnTarget()        // want ".*not closed!"
+}
