@@ -78,7 +78,7 @@ func (i *checkItem) popInstrsOfBlock(b *ssa.BasicBlock) []ssa.Instruction {
 	return ret
 }
 
-// TODO: move to member of analuzer
+// TODO: move to member of analyzer
 var mustClose = map[*ssa.BasicBlock][]*checkItem{}
 
 func checkSSAFunc(pass *analysis.Pass, f *ssa.Function, targetTypes []types.Type) {
@@ -110,16 +110,24 @@ func checkSSAFunc(pass *analysis.Pass, f *ssa.Function, targetTypes []types.Type
 				case *ssa.Store:
 					// check if it's closed by a defer closure
 					maybeClosureCapture := v.Addr
+					closeCalled := false
+					deferClose := false
 					for _, ref := range *maybeClosureCapture.Referrers() {
-						makeClosure, ok := ref.(*ssa.MakeClosure)
-						if !ok {
-							continue
+						switch v := ref.(type) {
+						case *ssa.Call:
+							if maybeClosureCapture == receiverOfClose(v.Call) {
+								closeCalled = true
+							}
+						case *ssa.MakeClosure:
+							// for simplicity, we don't check if the captured value is changed when defer is
+							// called
+							if isDeferClosure(v) {
+								deferClose = true
+							}
 						}
-						// for simplicity, we don't check if the captured value is changed when defer is
-						// called
-						if isDeferClosure(makeClosure) {
-							continue mustCloseLoop
-						}
+					}
+					if closeCalled && deferClose {
+						continue mustCloseLoop
 					}
 				case *ssa.MakeClosure:
 					if isDeferClosure(v) {

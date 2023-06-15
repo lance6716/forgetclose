@@ -29,7 +29,7 @@ func overwrite() {
 	rows.Close()
 }
 
-func iftest() {
+func ifTest() {
 	rows, _ := db.Query("SELECT name FROM users") // want ".*not closed!"
 	var i int
 	rows.Scan(&i)
@@ -38,7 +38,7 @@ func iftest() {
 	}
 }
 
-func iferr() {
+func ifErr() {
 	rows, err := db.Query("SELECT name FROM users")
 	if err != nil {
 		return
@@ -51,7 +51,7 @@ func iferr() {
 	}
 }
 
-func fortest() {
+func forTest() {
 	rows, err := db.Query("SELECT name FROM users")
 	if err != nil {
 		return
@@ -75,7 +75,7 @@ func fortest() {
 	rows.Close()
 }
 
-func defertest() {
+func deferTest() {
 	rows, err := db.Query("SELECT name FROM users")
 	if err != nil {
 		return
@@ -89,9 +89,21 @@ func defertest() {
 	}
 }
 
-func deferclosure() {
+func deferClosure() {
 	rows, _ := db.Query("SELECT name FROM users")
 	defer func() {
 		rows.Close()
 	}()
+}
+
+func deferClosureNotClose() {
+	rows, _ := db.Query("SELECT name FROM users") // want ".*not closed!"
+	defer func() {
+		rows.Next()
+	}()
+}
+
+func deferNotClose() {
+	rows, _ := db.Query("SELECT name FROM users") // want ".*not closed!"
+	defer rows.Next()
 }
