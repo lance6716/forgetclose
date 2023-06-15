@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"log"
 
+	"golang.org/x/exp/slices"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/buildssa"
 	"golang.org/x/tools/go/ssa"
@@ -42,7 +42,7 @@ func run(pass *analysis.Pass) (interface{}, error) {
 	}
 
 	for _, f := range pssa.SrcFuncs {
-		checkSSAFunc(pass, f, targetTypes)
+		checkFunc(pass, f, targetTypes)
 	}
 	return nil, nil
 }
@@ -79,14 +79,36 @@ func (i *checkItem) popInstrsOfBlock(b *ssa.BasicBlock) []ssa.Instruction {
 }
 
 // TODO: move to member of analyzer
-var mustClose = map[*ssa.BasicBlock][]*checkItem{}
+var (
+	mustClose               = map[*ssa.BasicBlock][]*checkItem{}
+	doneCheckItemFromParam  = map[*ssa.Function]struct{}{}
+	doneCheckItemFromInstrs = map[*ssa.Function]struct{}{}
+)
 
-func checkSSAFunc(pass *analysis.Pass, f *ssa.Function, targetTypes []types.Type) {
-	for _, b := range f.DomPreorder() {
-		for _, instr := range b.Instrs {
-			item := getCheckItemFromCall(instr, targetTypes)
-			if item != nil {
-				mustClose[b] = append(mustClose[b], item)
+func checkFunc(
+	pass *analysis.Pass,
+	f *ssa.Function,
+	targetTypes []types.Type,
+	presetItems ...*checkItem,
+) {
+	defer func() {
+		doneCheckItemFromInstrs[f] = struct{}{}
+	}()
+
+	for i, b := range f.DomPreorder() {
+		if len(presetItems) > 0 {
+			if _, ok := doneCheckItemFromParam[f]; !ok && i == 0 {
+				mustClose[b] = append(mustClose[b], presetItems...)
+				doneCheckItemFromParam[f] = struct{}{}
+			}
+		}
+
+		if _, ok := doneCheckItemFromInstrs[f]; !ok {
+			for _, instr := range b.Instrs {
+				item := getCheckItemFromCall(instr, targetTypes)
+				if item != nil {
+					mustClose[b] = append(mustClose[b], item)
+				}
 			}
 		}
 
@@ -96,8 +118,8 @@ func checkSSAFunc(pass *analysis.Pass, f *ssa.Function, targetTypes []types.Type
 				continue mustCloseLoop
 			}
 
-			for _, ref := range item.popInstrsOfBlock(b) {
-				log.Printf("ref: %T %s", ref, ref)
+			refsInBlock := item.popInstrsOfBlock(b)
+			for i, ref := range refsInBlock {
 				switch v := ref.(type) {
 				case *ssa.Defer:
 					if item.v == receiverOfClose(v.Call) {
@@ -107,26 +129,61 @@ func checkSSAFunc(pass *analysis.Pass, f *ssa.Function, targetTypes []types.Type
 					if item.v == receiverOfClose(v.Call) {
 						continue mustCloseLoop
 					}
+
+					if i != len(refsInBlock)-1 {
+						continue
+					}
+					// for the last call, maybe the value is closed inside the function
+					f := v.Call.StaticCallee()
+					argIdx := slices.Index(v.Call.Args, item.v)
+					if argIdx >= len(f.Params) {
+						// functions whose source code cannot be accessed will have zero params
+						if len(f.Params) == 0 {
+							continue
+						}
+					}
+					presetCheckItem := &checkItem{
+						v:        f.Params[argIdx],
+						pos:      item.pos,
+						reported: item.reported,
+					}
+					presetCheckItem.refs = *presetCheckItem.v.Referrers()
+					checkFunc(pass, f, targetTypes, presetCheckItem)
+					continue mustCloseLoop
 				case *ssa.Store:
 					// check if it's closed by a defer closure
 					maybeClosureCapture := v.Addr
-					closeCalled := false
-					deferClose := false
 					for _, ref := range *maybeClosureCapture.Referrers() {
-						switch v := ref.(type) {
-						case *ssa.Call:
-							if maybeClosureCapture == receiverOfClose(v.Call) {
-								closeCalled = true
-							}
-						case *ssa.MakeClosure:
-							// for simplicity, we don't check if the captured value is changed when defer is
-							// called
-							if isDeferClosure(v) {
-								deferClose = true
-							}
+						makeClosure, ok := ref.(*ssa.MakeClosure)
+						if !ok {
+							continue
 						}
-					}
-					if closeCalled && deferClose {
+						if !isDeferClosure(makeClosure) {
+							continue
+						}
+						presetCheckItem := &checkItem{
+							pos:      item.pos,
+							reported: item.reported,
+						}
+
+						fn := makeClosure.Fn.(*ssa.Function)
+						idx := slices.Index(makeClosure.Bindings, maybeClosureCapture)
+						captureVar := fn.FreeVars[idx]
+
+						for _, ref := range *captureVar.Referrers() {
+							unOp, ok := ref.(*ssa.UnOp)
+							if !ok {
+								continue
+							}
+							if unOp.Op != token.MUL {
+								continue
+							}
+							presetCheckItem.v = unOp
+							break
+						}
+
+						presetCheckItem.refs = *presetCheckItem.v.Referrers()
+						checkFunc(pass, fn, targetTypes, presetCheckItem)
 						continue mustCloseLoop
 					}
 				case *ssa.MakeClosure:
@@ -139,6 +196,7 @@ func checkSSAFunc(pass *analysis.Pass, f *ssa.Function, targetTypes []types.Type
 				item.report(pass)
 			}
 		}
+		mustClose[b] = nil
 	}
 }
 
