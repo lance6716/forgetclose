@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"log"
 
 	"golang.org/x/exp/slices"
 	"golang.org/x/tools/go/analysis"
@@ -97,6 +98,7 @@ func checkFunc(
 	}()
 
 	for i, b := range f.DomPreorder() {
+		log.Printf("block: %p", b)
 		if len(presetItems) > 0 {
 			if _, ok := doneCheckItemFromParam[f]; !ok && i == 0 {
 				mustClose[b] = append(mustClose[b], presetItems...)
@@ -106,6 +108,12 @@ func checkFunc(
 
 		if _, ok := doneCheckItemFromInstrs[f]; !ok {
 			for _, instr := range b.Instrs {
+				val, ok := instr.(ssa.Value)
+				if !ok {
+					log.Printf("instr: %T %s", instr, instr)
+				} else {
+					log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
+				}
 				item := getCheckItemFromCall(instr, targetTypes)
 				if item != nil {
 					mustClose[b] = append(mustClose[b], item)
@@ -154,8 +162,12 @@ func checkFunc(
 					continue mustCloseLoop
 				case *ssa.Store:
 					// check if it's closed by a defer closure
-					maybeClosureCapture := v.Addr
-					for _, ref := range *maybeClosureCapture.Referrers() {
+					storedTo := v.Addr
+					if _, ok := storedTo.(*ssa.FieldAddr); ok {
+						// blindly assume it's closed after assign it to a field of struct
+						continue mustCloseLoop
+					}
+					for _, ref := range *storedTo.Referrers() {
 						makeClosure, ok := ref.(*ssa.MakeClosure)
 						if !ok {
 							continue
@@ -169,7 +181,7 @@ func checkFunc(
 						}
 
 						fn := makeClosure.Fn.(*ssa.Function)
-						idx := slices.Index(makeClosure.Bindings, maybeClosureCapture)
+						idx := slices.Index(makeClosure.Bindings, storedTo)
 						captureVar := fn.FreeVars[idx]
 
 						for _, ref := range *captureVar.Referrers() {

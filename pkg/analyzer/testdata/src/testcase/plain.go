@@ -1,5 +1,7 @@
 package testcase
 
+import "database/sql"
+
 func plain() {
 	rows, _ := db.Query("SELECT name FROM users") // want ".*not closed!"
 	rows.Next()
@@ -48,6 +50,13 @@ func ifErr() {
 	rows, err = db.Query("SELECT name FROM users")
 	if err == nil {
 		rows.Close()
+	}
+}
+
+func underscore() {
+	_, err := db.Query("SELECT name FROM users") // want ".*not closed!"
+	if err != nil {
+		return
 	}
 }
 
@@ -106,4 +115,13 @@ func deferClosureNotClose() {
 func deferNotClose() {
 	rows, _ := db.Query("SELECT name FROM users") // want ".*not closed!"
 	defer rows.Next()
+}
+
+func return2() (*sql.Rows, error) {
+	rows, err := db.Query("SELECT name FROM users")
+	if err != nil {
+		return db.Query("SELECT name FROM users")
+	}
+	rows.Next()
+	return rows, nil
 }

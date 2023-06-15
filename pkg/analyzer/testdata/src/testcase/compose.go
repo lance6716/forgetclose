@@ -45,3 +45,13 @@ func returnTest() {
 	rows = returnTarget() // want ".*not closed!"
 	returnTarget()        // want ".*not closed!"
 }
+
+type holder struct {
+	rows *sql.Rows
+}
+
+func asField() {
+	rows, _ := db.Query("SELECT name FROM users")
+	h := holder{rows: rows}
+	h.rows.Close()
+}

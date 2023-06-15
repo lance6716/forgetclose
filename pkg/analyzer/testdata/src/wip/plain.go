@@ -10,14 +10,11 @@ var (
 	db  *sql.DB
 )
 
-func returnTarget() *sql.Rows {
-	rows, _ := db.Query("SELECT name FROM users")
-	return rows
-}
-
-func returnTest() {
-	rows := returnTarget()
-	rows.Close()
-	rows = returnTarget() // want ".*not closed!"
-	returnTarget()        // want ".*not closed!"
+func return2() (*sql.Rows, error) {
+	rows, err := db.Query("SELECT name FROM users")
+	if err != nil {
+		return db.Query("SELECT name FROM users")
+	}
+	rows.Next()
+	return rows, nil
 }
