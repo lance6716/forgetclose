@@ -13,6 +13,6 @@ func Test(t *testing.T) {
 		{"database/sql", "Rows"},
 	}
 	checker := NewAnalyzer(types)
-	//analysistest.Run(t, testdata, checker, "wip")
-	analysistest.Run(t, testdata, checker, "testcase")
+	analysistest.Run(t, testdata, checker, "wip")
+	//analysistest.Run(t, testdata, checker, "testcase")
 }

@@ -10,14 +10,12 @@ var (
 	db  *sql.DB
 )
 
-func checkNilBeforeClose(r *sql.Rows) {
-	if r == nil {
-		return
-	}
-	r.Close()
-}
-
 func deferClosureArgNotClose() {
 	rows, _ := db.Query("SELECT name FROM users")
-	checkNilBeforeClose(rows)
+	defer func() {
+		if rows != nil {
+			rows.Close()
+			rows.Close()
+		}
+	}()
 }

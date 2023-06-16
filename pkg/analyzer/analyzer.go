@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"log"
 	"sync"
 
 	"golang.org/x/exp/slices"
@@ -46,6 +47,8 @@ func NewAnalyzer(types []CheckType) *analysis.Analyzer {
 func (t *closeTracker) run(pass *analysis.Pass) (interface{}, error) {
 	t.runLock.Lock()
 	defer t.runLock.Unlock()
+
+	log.Printf("run: %s", pass.Pkg.Path)
 
 	pssa, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {
@@ -112,7 +115,7 @@ func (t *closeTracker) checkFunc(
 	}()
 
 	for i, b := range f.DomPreorder() {
-		//log.Printf("block: %p %s", b, b)
+		log.Printf("block: %p %s", b, b)
 		if len(presetItems) > 0 {
 			if _, ok := t.doneCheckItemFromParam[f]; !ok && i == 0 {
 				t.mustClose[b] = append(t.mustClose[b], presetItems...)
@@ -122,12 +125,12 @@ func (t *closeTracker) checkFunc(
 
 		if _, ok := t.doneCheckItemFromInstrs[f]; !ok {
 			for _, instr := range b.Instrs {
-				//val, ok := instr.(ssa.Value)
-				//if !ok {
-				//	log.Printf("instr: %T %s", instr, instr)
-				//} else {
-				//	log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
-				//}
+				val, ok := instr.(ssa.Value)
+				if !ok {
+					log.Printf("instr: %T %s", instr, instr)
+				} else {
+					log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
+				}
 				item := getCheckItemFromCall(instr, targetTypes)
 				if item != nil {
 					t.mustClose[b] = append(t.mustClose[b], item)
@@ -143,12 +146,12 @@ func (t *closeTracker) checkFunc(
 
 			refsInBlock := item.popInstrsOfBlock(b)
 			for _, ref := range refsInBlock {
-				//val, ok := ref.(ssa.Value)
-				//if !ok {
-				//	log.Printf("ref: %T %s", ref, ref)
-				//} else {
-				//	log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
-				//}
+				val, ok := ref.(ssa.Value)
+				if !ok {
+					log.Printf("ref: %T %s", ref, ref)
+				} else {
+					log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
+				}
 				switch v := ref.(type) {
 				case *ssa.Defer:
 					if item.v == receiverOfClose(v.Call) {
@@ -165,7 +168,10 @@ func (t *closeTracker) checkFunc(
 						item.markClosed()
 						continue mustCloseLoop
 					}
-
+					if i != len(refsInBlock)-1 {
+						continue
+					}
+					// for the last call, maybe the value is closed inside the function
 					if t.checkFuncCheckArg(pass, v.Call, item, targetTypes) {
 						item.markClosed()
 						continue mustCloseLoop
@@ -197,6 +203,7 @@ func (t *closeTracker) checkFunc(
 						captureVar := fn.FreeVars[idx]
 
 						for _, ref := range *captureVar.Referrers() {
+							// TODO: delay UnOp until access it
 							unOp, ok := ref.(*ssa.UnOp)
 							if !ok {
 								continue
