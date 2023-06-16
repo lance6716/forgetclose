@@ -48,7 +48,7 @@ func (t *closeTracker) run(pass *analysis.Pass) (interface{}, error) {
 	t.runLock.Lock()
 	defer t.runLock.Unlock()
 
-	log.Printf("run: %s", pass.Pkg.Path)
+	log.Printf("run: %s", pass.Pkg.Path())
 
 	pssa, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {
@@ -145,90 +145,10 @@ func (t *closeTracker) checkFunc(
 			}
 
 			refsInBlock := item.popInstrsOfBlock(b)
-			for _, ref := range refsInBlock {
-				val, ok := ref.(ssa.Value)
-				if !ok {
-					log.Printf("ref: %T %s", ref, ref)
-				} else {
-					log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
-				}
-				switch v := ref.(type) {
-				case *ssa.Defer:
-					if item.v == receiverOfClose(v.Call) {
-						item.markClosed()
-						continue mustCloseLoop
-					}
-					// used as a parameter of defer
-					t.checkFuncCheckArg(pass, v.Call, item, targetTypes)
-					if *item.closed || *item.reported {
-						continue mustCloseLoop
-					}
-				case *ssa.Call:
-					if item.v == receiverOfClose(v.Call) {
-						item.markClosed()
-						continue mustCloseLoop
-					}
-					if i != len(refsInBlock)-1 {
-						continue
-					}
-					// for the last call, maybe the value is closed inside the function
-					if t.checkFuncCheckArg(pass, v.Call, item, targetTypes) {
-						item.markClosed()
-						continue mustCloseLoop
-					}
-				case *ssa.Store:
-					// check if it's closed by a defer closure
-					storedTo := v.Addr
-					if _, ok := storedTo.(*ssa.FieldAddr); ok {
-						// blindly assume it's closed after assign it to a field of struct
-						item.markClosed()
-						continue mustCloseLoop
-					}
-					for _, ref := range *storedTo.Referrers() {
-						makeClosure, ok := ref.(*ssa.MakeClosure)
-						if !ok {
-							continue
-						}
-						if !isDeferClosure(makeClosure) {
-							continue
-						}
-						presetCheckItem := &checkItem{
-							pos:      item.pos,
-							closed:   item.closed,
-							reported: item.reported,
-						}
 
-						fn := makeClosure.Fn.(*ssa.Function)
-						idx := slices.Index(makeClosure.Bindings, storedTo)
-						captureVar := fn.FreeVars[idx]
-
-						for _, ref := range *captureVar.Referrers() {
-							// TODO: delay UnOp until access it
-							unOp, ok := ref.(*ssa.UnOp)
-							if !ok {
-								continue
-							}
-							if unOp.Op != token.MUL {
-								continue
-							}
-							presetCheckItem.v = unOp
-							presetCheckItem.tp = unOp.Type().String()
-							break
-						}
-
-						presetCheckItem.refs = *presetCheckItem.v.Referrers()
-						t.checkFunc(pass, fn, targetTypes, presetCheckItem)
-						item.markClosed()
-						continue mustCloseLoop
-					}
-				case *ssa.MakeClosure:
-					if isDeferClosure(v) {
-						item.markClosed()
-						continue mustCloseLoop
-					}
-				case *ssa.Return:
-					// caller will find the target by getCheckItemFromCall
-					item.markClosed()
+			for i, ref := range refsInBlock {
+				isLast := i == len(refsInBlock)-1
+				if t.checkRefIsClosed(pass, ref, isLast, item, targetTypes) {
 					continue mustCloseLoop
 				}
 			}
@@ -238,6 +158,114 @@ func (t *closeTracker) checkFunc(
 		}
 		t.mustClose[b] = nil
 	}
+}
+
+func (t *closeTracker) checkRefIsClosed(
+	pass *analysis.Pass,
+	ref ssa.Instruction,
+	isLastRef bool,
+	item *checkItem,
+	targetTypes []types.Type,
+) (shouldSkip bool) {
+	val, ok := ref.(ssa.Value)
+	if !ok {
+		log.Printf("ref: %T %s", ref, ref)
+	} else {
+		log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
+	}
+
+	switch v := ref.(type) {
+	case *ssa.UnOp:
+		// for simplicity, when we are inside closure, defer all the capture
+		if v.Op != token.MUL {
+			return false
+		}
+
+		refs := *v.Referrers()
+		newItem := &checkItem{
+			v:        v,
+			tp:       item.tp,
+			pos:      item.pos,
+			closed:   item.closed,
+			reported: item.reported,
+			refs:     refs,
+		}
+		for i, ref := range refs {
+			isLast := i == len(refs)-1
+
+			if t.checkRefIsClosed(pass, ref, isLast, newItem, targetTypes) {
+				return true
+			}
+		}
+	case *ssa.Defer:
+		if item.v == receiverOfClose(v.Call) {
+			item.markClosed()
+			return true
+		}
+		// used as a parameter of defer
+		t.checkFuncCheckArg(pass, v.Call, item, targetTypes)
+		if *item.closed || *item.reported {
+			return true
+		}
+	case *ssa.Call:
+		if item.v == receiverOfClose(v.Call) {
+			item.markClosed()
+			return true
+		}
+		if !isLastRef {
+			return false
+		}
+		// for the last call, maybe the value is closed inside the function
+		if t.checkFuncCheckArg(pass, v.Call, item, targetTypes) {
+			item.markClosed()
+			return true
+		}
+	case *ssa.Store:
+		// check if it's closed by a defer closure
+		storedTo := v.Addr
+		if _, ok := storedTo.(*ssa.FieldAddr); ok {
+			// blindly assume it's closed after assign it to a field of struct
+			item.markClosed()
+			return true
+		}
+		for _, ref := range *storedTo.Referrers() {
+			makeClosure, ok := ref.(*ssa.MakeClosure)
+			if !ok {
+				continue
+			}
+			if !isDeferClosure(makeClosure) {
+				continue
+			}
+
+			fn := makeClosure.Fn.(*ssa.Function)
+			idx := slices.Index(makeClosure.Bindings, storedTo)
+			captureVar := fn.FreeVars[idx]
+
+			presetCheckItem := &checkItem{
+				v:        captureVar,
+				tp:       item.tp,
+				pos:      item.pos,
+				closed:   item.closed,
+				reported: item.reported,
+			}
+
+			presetCheckItem.refs = *presetCheckItem.v.Referrers()
+			// generally Close is the last call, so if ref is inside defer we only check this ref
+			t.checkFunc(pass, fn, targetTypes, presetCheckItem)
+			item.markClosed()
+			return true
+		}
+	case *ssa.MakeClosure:
+		if isDeferClosure(v) {
+			item.markClosed()
+			return true
+		}
+	case *ssa.Return:
+		// caller will find the target by getCheckItemFromCall
+		item.markClosed()
+		return true
+	}
+	return false
 }
 
 func (t *closeTracker) checkFuncCheckArg(
@@ -315,9 +343,10 @@ func (t *closeTracker) trySpreadNilCheckBranch(
 	if !ok {
 		return false
 	}
+
 	switch cond.Op {
 	case token.NEQ:
-		if cond.X != item.v && cond.Y != item.v {
+		if deref(cond.X) != item.v && deref(cond.Y) != item.v {
 			return false
 		}
 		if !isNil(cond.X) && !isNil(cond.Y) {
@@ -326,7 +355,7 @@ func (t *closeTracker) trySpreadNilCheckBranch(
 		t.mustClose[b.Succs[0]] = append(t.mustClose[b.Succs[0]], item)
 		return true
 	case token.EQL:
-		if cond.X != item.v && cond.Y != item.v {
+		if deref(cond.X) != item.v && deref(cond.Y) != item.v {
 			return false
 		}
 		if !isNil(cond.X) && !isNil(cond.Y) {

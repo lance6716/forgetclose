@@ -82,3 +82,11 @@ func isNil(v ssa.Value) bool {
 	}
 	return c.IsNil()
 }
+
+func deref(v ssa.Value) ssa.Value {
+	v2, ok := v.(*ssa.UnOp)
+	if !ok {
+		return v
+	}
+	return deref(v2.X)
+}

@@ -137,6 +137,15 @@ func deferClosureArgNotClose() {
 	}(rows)
 }
 
+func deferClosureIfCheck() {
+	rows, _ := db.Query("SELECT name FROM users")
+	defer func() {
+		if rows != nil {
+			rows.Close()
+		}
+	}()
+}
+
 func return2() (*sql.Rows, error) {
 	rows, err := db.Query("SELECT name FROM users")
 	if err != nil {

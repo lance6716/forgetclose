@@ -15,7 +15,6 @@ func deferClosureArgNotClose() {
 	defer func() {
 		if rows != nil {
 			rows.Close()
-			rows.Close()
 		}
 	}()
 }
