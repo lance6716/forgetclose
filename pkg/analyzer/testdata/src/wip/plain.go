@@ -10,11 +10,12 @@ var (
 	db  *sql.DB
 )
 
-func return2() (*sql.Rows, error) {
-	rows, err := db.Query("SELECT name FROM users")
+func deferClosureArgNotClose() {
+	rows, err := db.Query("SELECT name FROM users") // want ".*not closed!"
 	if err != nil {
-		return db.Query("SELECT name FROM users")
+		return
 	}
-	rows.Next()
-	return rows, nil
+	defer func(rs *sql.Rows) {
+		_ = rs.Next()
+	}(rows)
 }

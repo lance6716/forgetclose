@@ -10,17 +10,16 @@ const (
 	closeMethod = "Close"
 )
 
-func getTargetTypes(ssaPkg *ssa.Package) []types.Type {
+func getTargetTypes(ssaPkg *ssa.Package, checkTypes []CheckType) []types.Type {
 	targets := []types.Type{}
 
-	for _, tuple := range PackageAndTypes {
-		pkgName, typeName := tuple[0], tuple[1]
-		pkg := ssaPkg.Prog.ImportedPackage(pkgName)
+	for _, t := range checkTypes {
+		pkg := ssaPkg.Prog.ImportedPackage(t.PkgPath)
 		if pkg == nil {
 			continue
 		}
 
-		pkgType := pkg.Type(typeName)
+		pkgType := pkg.Type(t.Name)
 		if pkgType == nil {
 			continue
 		}
