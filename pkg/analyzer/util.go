@@ -74,3 +74,11 @@ func resolveInTypes(t types.Type, targetTypes []types.Type) bool {
 
 	return false
 }
+
+func isNil(v ssa.Value) bool {
+	c, ok := v.(*ssa.Const)
+	if !ok {
+		return false
+	}
+	return c.IsNil()
+}

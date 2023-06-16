@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
-	"log"
 	"sync"
 
 	"golang.org/x/exp/slices"
@@ -113,7 +112,7 @@ func (t *closeTracker) checkFunc(
 	}()
 
 	for i, b := range f.DomPreorder() {
-		log.Printf("block: %p %s", b, b)
+		//log.Printf("block: %p %s", b, b)
 		if len(presetItems) > 0 {
 			if _, ok := t.doneCheckItemFromParam[f]; !ok && i == 0 {
 				t.mustClose[b] = append(t.mustClose[b], presetItems...)
@@ -123,12 +122,12 @@ func (t *closeTracker) checkFunc(
 
 		if _, ok := t.doneCheckItemFromInstrs[f]; !ok {
 			for _, instr := range b.Instrs {
-				val, ok := instr.(ssa.Value)
-				if !ok {
-					log.Printf("instr: %T %s", instr, instr)
-				} else {
-					log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
-				}
+				//val, ok := instr.(ssa.Value)
+				//if !ok {
+				//	log.Printf("instr: %T %s", instr, instr)
+				//} else {
+				//	log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
+				//}
 				item := getCheckItemFromCall(instr, targetTypes)
 				if item != nil {
 					t.mustClose[b] = append(t.mustClose[b], item)
@@ -143,13 +142,13 @@ func (t *closeTracker) checkFunc(
 			}
 
 			refsInBlock := item.popInstrsOfBlock(b)
-			for i, ref := range refsInBlock {
-				val, ok := ref.(ssa.Value)
-				if !ok {
-					log.Printf("ref: %T %s", ref, ref)
-				} else {
-					log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
-				}
+			for _, ref := range refsInBlock {
+				//val, ok := ref.(ssa.Value)
+				//if !ok {
+				//	log.Printf("ref: %T %s", ref, ref)
+				//} else {
+				//	log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
+				//}
 				switch v := ref.(type) {
 				case *ssa.Defer:
 					if item.v == receiverOfClose(v.Call) {
@@ -157,24 +156,8 @@ func (t *closeTracker) checkFunc(
 						continue mustCloseLoop
 					}
 					// used as a parameter of defer
-					f := v.Call.StaticCallee()
-					argIdx := slices.Index(v.Call.Args, item.v)
-					if argIdx >= len(f.Params) {
-						// functions whose source code cannot be accessed will have zero params
-						if len(f.Params) == 0 {
-							continue
-						}
-					}
-					presetCheckItem := &checkItem{
-						v:        f.Params[argIdx],
-						tp:       item.tp,
-						pos:      item.pos,
-						closed:   item.closed,
-						reported: item.reported,
-					}
-					presetCheckItem.refs = *presetCheckItem.v.Referrers()
-					t.checkFunc(pass, f, targetTypes, presetCheckItem)
-					if *presetCheckItem.closed || *presetCheckItem.reported {
+					t.checkFuncCheckArg(pass, v.Call, item, targetTypes)
+					if *item.closed || *item.reported {
 						continue mustCloseLoop
 					}
 				case *ssa.Call:
@@ -183,29 +166,10 @@ func (t *closeTracker) checkFunc(
 						continue mustCloseLoop
 					}
 
-					if i != len(refsInBlock)-1 {
-						continue
+					if t.checkFuncCheckArg(pass, v.Call, item, targetTypes) {
+						item.markClosed()
+						continue mustCloseLoop
 					}
-					// for the last call, maybe the value is closed inside the function
-					f := v.Call.StaticCallee()
-					argIdx := slices.Index(v.Call.Args, item.v)
-					if argIdx >= len(f.Params) {
-						// functions whose source code cannot be accessed will have zero params
-						if len(f.Params) == 0 {
-							continue
-						}
-					}
-					presetCheckItem := &checkItem{
-						v:        f.Params[argIdx],
-						tp:       item.tp,
-						pos:      item.pos,
-						closed:   item.closed,
-						reported: item.reported,
-					}
-					presetCheckItem.refs = *presetCheckItem.v.Referrers()
-					t.checkFunc(pass, f, targetTypes, presetCheckItem)
-					item.markClosed()
-					continue mustCloseLoop
 				case *ssa.Store:
 					// check if it's closed by a defer closure
 					storedTo := v.Addr
@@ -269,8 +233,37 @@ func (t *closeTracker) checkFunc(
 	}
 }
 
-// trySpreadCtorErrBranch handles the if `v, err := NewXXX(); err != nil` branch
-func (t *closeTracker) trySpreadCtorErrBranch(b *ssa.BasicBlock, item *checkItem) bool {
+func (t *closeTracker) checkFuncCheckArg(
+	pass *analysis.Pass,
+	call ssa.CallCommon,
+	item *checkItem,
+	targetTypes []types.Type,
+) (ok bool) {
+	f := call.StaticCallee()
+	argIdx := slices.Index(call.Args, item.v)
+	if argIdx >= len(f.Params) {
+		// functions whose source code cannot be accessed will have zero params
+		if len(f.Params) == 0 {
+			return false
+		}
+	}
+	presetCheckItem := &checkItem{
+		v:        f.Params[argIdx],
+		tp:       item.tp,
+		pos:      item.pos,
+		closed:   item.closed,
+		reported: item.reported,
+	}
+	presetCheckItem.refs = *presetCheckItem.v.Referrers()
+	t.checkFunc(pass, f, targetTypes, presetCheckItem)
+	return true
+}
+
+// trySpreadCtorErrBranch handles the `if v, err := NewXXX(); err != nil` branch
+func (t *closeTracker) trySpreadCtorErrBranch(
+	b *ssa.BasicBlock,
+	item *checkItem,
+) (ok bool) {
 	if item.ctorErr == nil {
 		return false
 	}
@@ -301,7 +294,47 @@ func (t *closeTracker) trySpreadCtorErrBranch(b *ssa.BasicBlock, item *checkItem
 	return false
 }
 
-func (t *closeTracker) trySpreadToSuccBlocks(b *ssa.BasicBlock, item *checkItem) bool {
+// trySpreadCtorErrBranch handles the `if v, err := NewXXX(); v != nil` branch
+func (t *closeTracker) trySpreadNilCheckBranch(
+	b *ssa.BasicBlock,
+	item *checkItem,
+) (ok bool) {
+	lastInstr := b.Instrs[len(b.Instrs)-1]
+	ifInstr, ok := lastInstr.(*ssa.If)
+	if !ok {
+		return false
+	}
+	cond, ok := ifInstr.Cond.(*ssa.BinOp)
+	if !ok {
+		return false
+	}
+	switch cond.Op {
+	case token.NEQ:
+		if cond.X != item.v && cond.Y != item.v {
+			return false
+		}
+		if !isNil(cond.X) && !isNil(cond.Y) {
+			return false
+		}
+		t.mustClose[b.Succs[0]] = append(t.mustClose[b.Succs[0]], item)
+		return true
+	case token.EQL:
+		if cond.X != item.v && cond.Y != item.v {
+			return false
+		}
+		if !isNil(cond.X) && !isNil(cond.Y) {
+			return false
+		}
+		t.mustClose[b.Succs[1]] = append(t.mustClose[b.Succs[1]], item)
+		return true
+	}
+	return false
+}
+
+func (t *closeTracker) trySpreadToSuccBlocks(
+	b *ssa.BasicBlock,
+	item *checkItem,
+) (ok bool) {
 	if len(b.Succs) == 0 {
 		return false
 	}
@@ -310,6 +343,9 @@ func (t *closeTracker) trySpreadToSuccBlocks(b *ssa.BasicBlock, item *checkItem)
 	}
 
 	if t.trySpreadCtorErrBranch(b, item) {
+		return true
+	}
+	if t.trySpreadNilCheckBranch(b, item) {
 		return true
 	}
 	for _, succBlock := range b.Succs {

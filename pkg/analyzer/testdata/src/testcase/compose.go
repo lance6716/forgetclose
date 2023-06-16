@@ -55,3 +55,15 @@ func asField() {
 	h := holder{rows: rows}
 	h.rows.Close()
 }
+
+func checkNilBeforeClose(r *sql.Rows) {
+	if r == nil {
+		return
+	}
+	r.Close()
+}
+
+func nilTest() {
+	rows, _ := db.Query("SELECT name FROM users")
+	checkNilBeforeClose(rows)
+}
