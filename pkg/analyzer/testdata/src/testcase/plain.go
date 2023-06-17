@@ -163,3 +163,12 @@ func namedReturn() (_ string, err error) {
 	defer rows.Close()
 	return "", nil
 }
+
+func shadow() {
+	var rows *sql.Rows
+	rows, err := db.Query("SELECT name FROM users")
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+}

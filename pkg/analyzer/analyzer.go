@@ -13,6 +13,8 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
+const isDebug = false
+
 type CheckType struct {
 	PkgPath string
 	Name    string
@@ -48,8 +50,9 @@ func NewAnalyzer(types []CheckType) *analysis.Analyzer {
 }
 
 func (t *closeTracker) run(pass *analysis.Pass) (interface{}, error) {
-	log.Printf("run: %s", pass.Pkg.Path())
-
+	debug(func() {
+		log.Printf("run: %s", pass.Pkg.Path())
+	})
 	pssa, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
 	if !ok {
 		return nil, fmt.Errorf("no SSA found, got type %T", pass.ResultOf[buildssa.Analyzer])
@@ -118,7 +121,9 @@ func (t *closeTracker) checkFunc(
 
 	// use dominator tree order so no need to look back
 	for i, b := range f.DomPreorder() {
-		//log.Printf("block: %p %s", b, b)
+		debug(func() {
+			log.Printf("block: %p %s", b, b)
+		})
 		if len(presetItems) > 0 {
 			if _, ok := t.doneCheckFuncFromParam[f]; !ok && i == 0 {
 				t.checkBlock[b] = append(t.checkBlock[b], presetItems...)
@@ -128,12 +133,14 @@ func (t *closeTracker) checkFunc(
 
 		if _, ok := t.doneCheckFuncFromInstrs[f]; !ok {
 			for _, instr := range b.Instrs {
-				//val, ok := instr.(ssa.Value)
-				//if !ok {
-				//	log.Printf("instr: %T %s", instr, instr)
-				//} else {
-				//	log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
-				//}
+				debug(func() {
+					val, ok := instr.(ssa.Value)
+					if !ok {
+						log.Printf("instr: %T %s", instr, instr)
+					} else {
+						log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
+					}
+				})
 				item := getCheckItemFromCall(instr, targetTypes)
 				if item != nil {
 					t.checkBlock[b] = append(t.checkBlock[b], item)
@@ -170,12 +177,14 @@ func (t *closeTracker) checkRefIsClosed(
 	item *checkItem,
 	targetTypes []types.Type,
 ) (shouldSkip bool) {
-	//val, ok := ref.(ssa.Value)
-	//if !ok {
-	//	log.Printf("ref: %T %s", ref, ref)
-	//} else {
-	//	log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
-	//}
+	debug(func() {
+		val, ok := ref.(ssa.Value)
+		if !ok {
+			log.Printf("ref: %T %s", ref, ref)
+		} else {
+			log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
+		}
+	})
 
 	switch v := ref.(type) {
 	case *ssa.UnOp:
@@ -473,4 +482,11 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 		}
 	}
 	return ret
+}
+
+func debug(f func()) {
+	if !isDebug {
+		return
+	}
+	f()
 }
