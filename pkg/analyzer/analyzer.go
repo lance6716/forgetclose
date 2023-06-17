@@ -16,8 +16,8 @@ import (
 const isDebug = false
 
 type CheckType struct {
-	PkgPath string
-	Name    string
+	PkgPath    string
+	StructName string
 }
 
 type closeTracker struct {

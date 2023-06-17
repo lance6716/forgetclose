@@ -18,8 +18,8 @@ func main() {
 	}
 	fields := strings.Split(*checkTypes, ".")
 	types := []analyzer.CheckType{{
-		PkgPath: fields[0],
-		Name:    fields[1],
+		PkgPath:    fields[0],
+		StructName: fields[1],
 	}}
 	singlechecker.Main(analyzer.NewAnalyzer(types))
 }
