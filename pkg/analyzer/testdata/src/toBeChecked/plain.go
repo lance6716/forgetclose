@@ -1,4 +1,4 @@
-package wip
+package toBeChecked
 
 import (
 	"context"
@@ -10,11 +10,11 @@ var (
 	db  *sql.DB
 )
 
-func namedReturn() (_ string, err error) {
+func shadow() {
+	var rows *sql.Rows
 	rows, err := db.Query("SELECT name FROM users")
 	if err != nil {
-		return "", err
+		return
 	}
 	defer rows.Close()
-	return "", nil
 }

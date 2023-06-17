@@ -154,3 +154,12 @@ func return2() (*sql.Rows, error) {
 	rows.Next()
 	return rows, nil
 }
+
+func namedReturn() (_ string, err error) {
+	rows, err := db.Query("SELECT name FROM users")
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	return "", nil
+}

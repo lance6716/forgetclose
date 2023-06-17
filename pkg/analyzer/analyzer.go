@@ -20,24 +20,27 @@ type CheckType struct {
 
 type closeTracker struct {
 	checkTypes              []CheckType
-	mustClose               map[*ssa.BasicBlock][]*checkItem
-	doneCheckItemFromParam  map[*ssa.Function]struct{}
-	doneCheckItemFromInstrs map[*ssa.Function]struct{}
+	checkBlock              map[*ssa.BasicBlock][]*checkItem
+	doneCheckFuncFromParam  map[*ssa.Function]struct{}
+	doneCheckFuncFromInstrs map[*ssa.Function]struct{}
 
 	runLock sync.Mutex
 }
 
 func NewAnalyzer(types []CheckType) *analysis.Analyzer {
-	t := &closeTracker{
-		checkTypes:              types,
-		mustClose:               make(map[*ssa.BasicBlock][]*checkItem),
-		doneCheckItemFromParam:  make(map[*ssa.Function]struct{}),
-		doneCheckItemFromInstrs: make(map[*ssa.Function]struct{}),
+	run := func(pass *analysis.Pass) (interface{}, error) {
+		t := &closeTracker{
+			checkTypes:              types,
+			checkBlock:              make(map[*ssa.BasicBlock][]*checkItem),
+			doneCheckFuncFromParam:  make(map[*ssa.Function]struct{}),
+			doneCheckFuncFromInstrs: make(map[*ssa.Function]struct{}),
+		}
+		return t.run(pass)
 	}
 	return &analysis.Analyzer{
 		Name: "forgetclose",
 		Doc:  "Did you forget to call Close?",
-		Run:  t.run,
+		Run:  run,
 		Requires: []*analysis.Analyzer{
 			buildssa.Analyzer,
 		},
@@ -45,9 +48,6 @@ func NewAnalyzer(types []CheckType) *analysis.Analyzer {
 }
 
 func (t *closeTracker) run(pass *analysis.Pass) (interface{}, error) {
-	t.runLock.Lock()
-	defer t.runLock.Unlock()
-
 	log.Printf("run: %s", pass.Pkg.Path())
 
 	pssa, ok := pass.ResultOf[buildssa.Analyzer].(*buildssa.SSA)
@@ -68,16 +68,17 @@ func (t *closeTracker) run(pass *analysis.Pass) (interface{}, error) {
 }
 
 type checkItem struct {
-	// v is the value to be checked
+	// v is the value to be checked, closeTracker will look the referee of v to find
+	// Close() call. Note that the Close() may be called at *v.
 	v        ssa.Value
 	tp       string
 	pos      token.Pos
 	refs     []ssa.Instruction
 	closed   *bool
 	reported *bool
-	// ctorErr is the error of `v, err := NewXXX()`. If ctorErr is not nil, we don't
-	// need to close v.
-	ctorErr ssa.Value
+	// ifErr is the error of `v, err := NewXXX()`. If ifErr is not nil, we don't need
+	// to close v.
+	ifErr ssa.Value
 }
 
 func (i *checkItem) markClosed() {
@@ -85,6 +86,7 @@ func (i *checkItem) markClosed() {
 }
 
 func (i *checkItem) report(pass *analysis.Pass) {
+	// TODO: add leak position to message
 	pass.Reportf(i.pos, "%s not closed!", i.tp)
 	*i.reported = true
 }
@@ -111,37 +113,38 @@ func (t *closeTracker) checkFunc(
 	presetItems ...*checkItem,
 ) {
 	defer func() {
-		t.doneCheckItemFromInstrs[f] = struct{}{}
+		t.doneCheckFuncFromInstrs[f] = struct{}{}
 	}()
 
+	// use dominator tree order so no need to look back
 	for i, b := range f.DomPreorder() {
-		log.Printf("block: %p %s", b, b)
+		//log.Printf("block: %p %s", b, b)
 		if len(presetItems) > 0 {
-			if _, ok := t.doneCheckItemFromParam[f]; !ok && i == 0 {
-				t.mustClose[b] = append(t.mustClose[b], presetItems...)
-				t.doneCheckItemFromParam[f] = struct{}{}
+			if _, ok := t.doneCheckFuncFromParam[f]; !ok && i == 0 {
+				t.checkBlock[b] = append(t.checkBlock[b], presetItems...)
+				t.doneCheckFuncFromParam[f] = struct{}{}
 			}
 		}
 
-		if _, ok := t.doneCheckItemFromInstrs[f]; !ok {
+		if _, ok := t.doneCheckFuncFromInstrs[f]; !ok {
 			for _, instr := range b.Instrs {
-				val, ok := instr.(ssa.Value)
-				if !ok {
-					log.Printf("instr: %T %s", instr, instr)
-				} else {
-					log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
-				}
+				//val, ok := instr.(ssa.Value)
+				//if !ok {
+				//	log.Printf("instr: %T %s", instr, instr)
+				//} else {
+				//	log.Printf("instr(%s): %T %s", val.Name(), instr, instr)
+				//}
 				item := getCheckItemFromCall(instr, targetTypes)
 				if item != nil {
-					t.mustClose[b] = append(t.mustClose[b], item)
+					t.checkBlock[b] = append(t.checkBlock[b], item)
 				}
 			}
 		}
 
-	mustCloseLoop:
-		for _, item := range t.mustClose[b] {
+	checkBlockLoop:
+		for _, item := range t.checkBlock[b] {
 			if *item.reported {
-				continue mustCloseLoop
+				continue checkBlockLoop
 			}
 
 			refsInBlock := item.popInstrsOfBlock(b)
@@ -149,14 +152,14 @@ func (t *closeTracker) checkFunc(
 			for i, ref := range refsInBlock {
 				isLast := i == len(refsInBlock)-1
 				if t.checkRefIsClosed(pass, ref, isLast, item, targetTypes) {
-					continue mustCloseLoop
+					continue checkBlockLoop
 				}
 			}
 			if !t.trySpreadToSuccBlocks(b, item) {
 				item.report(pass)
 			}
 		}
-		t.mustClose[b] = nil
+		t.checkBlock[b] = nil
 	}
 }
 
@@ -167,12 +170,12 @@ func (t *closeTracker) checkRefIsClosed(
 	item *checkItem,
 	targetTypes []types.Type,
 ) (shouldSkip bool) {
-	val, ok := ref.(ssa.Value)
-	if !ok {
-		log.Printf("ref: %T %s", ref, ref)
-	} else {
-		log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
-	}
+	//val, ok := ref.(ssa.Value)
+	//if !ok {
+	//	log.Printf("ref: %T %s", ref, ref)
+	//} else {
+	//	log.Printf("ref(%s): %T %s", val.Name(), ref, ref)
+	//}
 
 	switch v := ref.(type) {
 	case *ssa.UnOp:
@@ -217,7 +220,6 @@ func (t *closeTracker) checkRefIsClosed(
 		}
 		// for the last call, maybe the value is closed inside the function
 		if t.checkFuncCheckArg(pass, v.Call, item, targetTypes) {
-			item.markClosed()
 			return true
 		}
 	case *ssa.Store:
@@ -250,9 +252,9 @@ func (t *closeTracker) checkRefIsClosed(
 			}
 
 			presetCheckItem.refs = *presetCheckItem.v.Referrers()
-			// generally Close is the last call, so if ref is inside defer we only check this ref
+			// generally Close is the last call, so if ref is inside defer we only need to
+			// check this ref
 			t.checkFunc(pass, fn, targetTypes, presetCheckItem)
-			item.markClosed()
 			return true
 		}
 	case *ssa.MakeClosure:
@@ -277,7 +279,7 @@ func (t *closeTracker) checkFuncCheckArg(
 	f := call.StaticCallee()
 	argIdx := slices.Index(call.Args, item.v)
 	if argIdx >= len(f.Params) {
-		// functions whose source code cannot be accessed will have zero params
+		// TODO: functions whose source code cannot be accessed will have zero params
 		if len(f.Params) == 0 {
 			return false
 		}
@@ -294,12 +296,35 @@ func (t *closeTracker) checkFuncCheckArg(
 	return true
 }
 
-// trySpreadCtorErrBranch handles the `if v, err := NewXXX(); err != nil` branch
-func (t *closeTracker) trySpreadCtorErrBranch(
+func (t *closeTracker) trySpreadToSuccBlocks(
 	b *ssa.BasicBlock,
 	item *checkItem,
 ) (ok bool) {
-	if item.ctorErr == nil {
+	if len(b.Succs) == 0 {
+		return false
+	}
+	if len(item.refs) == 0 {
+		return false
+	}
+
+	if t.trySpreadIfErrBranch(b, item) {
+		return true
+	}
+	if t.trySpreadNilCheckBranch(b, item) {
+		return true
+	}
+	for _, succBlock := range b.Succs {
+		t.checkBlock[succBlock] = append(t.checkBlock[succBlock], item)
+	}
+	return true
+}
+
+// trySpreadIfErrBranch handles the `if v, err := NewXXX(); err != nil` branch
+func (t *closeTracker) trySpreadIfErrBranch(
+	b *ssa.BasicBlock,
+	item *checkItem,
+) (ok bool) {
+	if item.ifErr == nil {
 		return false
 	}
 
@@ -312,24 +337,28 @@ func (t *closeTracker) trySpreadCtorErrBranch(
 	if !ok {
 		return false
 	}
+
+	x := deref(cond.X)
+	y := deref(cond.Y)
+
 	switch cond.Op {
 	case token.NEQ:
-		if cond.X != item.ctorErr && cond.Y != item.ctorErr {
+		if x != item.ifErr && y != item.ifErr {
 			return false
 		}
-		t.mustClose[b.Succs[1]] = append(t.mustClose[b.Succs[1]], item)
+		t.checkBlock[b.Succs[1]] = append(t.checkBlock[b.Succs[1]], item)
 		return true
 	case token.EQL:
-		if cond.X != item.ctorErr && cond.Y != item.ctorErr {
+		if x != item.ifErr && y != item.ifErr {
 			return false
 		}
-		t.mustClose[b.Succs[0]] = append(t.mustClose[b.Succs[0]], item)
+		t.checkBlock[b.Succs[0]] = append(t.checkBlock[b.Succs[0]], item)
 		return true
 	}
 	return false
 }
 
-// trySpreadCtorErrBranch handles the `if v, err := NewXXX(); v != nil` branch
+// trySpreadNilCheckBranch handles the `if v, err := NewXXX(); v != nil` branch
 func (t *closeTracker) trySpreadNilCheckBranch(
 	b *ssa.BasicBlock,
 	item *checkItem,
@@ -344,50 +373,30 @@ func (t *closeTracker) trySpreadNilCheckBranch(
 		return false
 	}
 
+	x := deref(cond.X)
+	y := deref(cond.Y)
+
 	switch cond.Op {
 	case token.NEQ:
-		if deref(cond.X) != item.v && deref(cond.Y) != item.v {
+		if x != item.v && y != item.v {
 			return false
 		}
 		if !isNil(cond.X) && !isNil(cond.Y) {
 			return false
 		}
-		t.mustClose[b.Succs[0]] = append(t.mustClose[b.Succs[0]], item)
+		t.checkBlock[b.Succs[0]] = append(t.checkBlock[b.Succs[0]], item)
 		return true
 	case token.EQL:
-		if deref(cond.X) != item.v && deref(cond.Y) != item.v {
+		if x != item.v && y != item.v {
 			return false
 		}
 		if !isNil(cond.X) && !isNil(cond.Y) {
 			return false
 		}
-		t.mustClose[b.Succs[1]] = append(t.mustClose[b.Succs[1]], item)
+		t.checkBlock[b.Succs[1]] = append(t.checkBlock[b.Succs[1]], item)
 		return true
 	}
 	return false
-}
-
-func (t *closeTracker) trySpreadToSuccBlocks(
-	b *ssa.BasicBlock,
-	item *checkItem,
-) (ok bool) {
-	if len(b.Succs) == 0 {
-		return false
-	}
-	if len(item.refs) == 0 {
-		return false
-	}
-
-	if t.trySpreadCtorErrBranch(b, item) {
-		return true
-	}
-	if t.trySpreadNilCheckBranch(b, item) {
-		return true
-	}
-	for _, succBlock := range b.Succs {
-		t.mustClose[succBlock] = append(t.mustClose[succBlock], item)
-	}
-	return true
 }
 
 var errTp = types.Universe.Lookup("error").Type()
@@ -407,16 +416,16 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 	// SSA value
 
 	var (
-		targetIdx  = -1
-		ctorErrIdx = -1
-		target     ssa.Value
-		ctorErr    ssa.Value
-		targetTp   string
+		targetIdx = -1
+		ifErrIdx  = -1
+		target    ssa.Value
+		ifErr     ssa.Value
+		targetTp  string
 	)
 	for i := 0; i < results.Len(); i++ {
 		tp := results.At(i).Type()
 		if types.Identical(tp, errTp) {
-			ctorErrIdx = i
+			ifErrIdx = i
 		}
 
 		if resolveInTypes(tp, targetTypes) {
@@ -435,8 +444,8 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 			switch instr.Index {
 			case targetIdx:
 				target = instr
-			case ctorErrIdx:
-				ctorErr = instr
+			case ifErrIdx:
+				ifErr = instr
 			}
 		case *ssa.Call:
 			target = call
@@ -453,8 +462,15 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 	if ret.v != nil && ret.v.Referrers() != nil {
 		ret.refs = *ret.v.Referrers()
 	}
-	if ctorErrIdx != -1 {
-		ret.ctorErr = ctorErr
+	if ifErrIdx != -1 {
+		// TODO: ugly check Store to named return. Can we unify the processing for v?
+		ret.ifErr = ifErr
+		refs := *ifErr.Referrers()
+		if len(refs) == 1 {
+			if store, ok := refs[0].(*ssa.Store); ok {
+				ret.ifErr = store.Addr
+			}
+		}
 	}
 	return ret
 }
