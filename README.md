@@ -18,6 +18,8 @@ For example, if you want to check `*sql.Rows` is closed:
 forgetclose -type "database/sql.Rows" ./...
 ```
 
+The first run will be slow because it needs golang to build SSA.
+
 ## Supported patterns
 
 You can see them under `pkg/analyzer/testdata/src/testcase`.
@@ -29,6 +31,7 @@ You can see them under `pkg/analyzer/testdata/src/testcase`.
 - Support cross package check
 - Add leak information in the error message
 - Speed up the analysis
+- Support check multiple types in one run
 
 A short guide to contribute:
 
@@ -41,6 +44,8 @@ If a line should be reported by linter, add a comment `// want "${message regexp
 4. Move the test case into `pkg/analyzer/testdata/src/testcase` or create another test package.
 Change the test file `pkg/analyzer/analyzer_test.go` to test them all.
 5. Open a PR. Thanks in advance!
+
+And you may find the constant `isDebug` in `pkg/analyzer/analyzer.go` helpful.
 
 ### Test
 
