@@ -15,6 +15,8 @@ import (
 
 const isDebug = false
 
+var debugMu sync.Mutex
+
 type CheckType struct {
 	PkgPath    string
 	StructName string
@@ -25,12 +27,14 @@ type closeTracker struct {
 	checkBlock              map[*ssa.BasicBlock][]*checkItem
 	doneCheckFuncFromParam  map[*ssa.Function]struct{}
 	doneCheckFuncFromInstrs map[*ssa.Function]struct{}
-
-	runLock sync.Mutex
 }
 
 func NewAnalyzer(types []CheckType) *analysis.Analyzer {
 	run := func(pass *analysis.Pass) (interface{}, error) {
+		if isDebug {
+			debugMu.Lock()
+			defer debugMu.Unlock()
+		}
 		t := &closeTracker{
 			checkTypes:              types,
 			checkBlock:              make(map[*ssa.BasicBlock][]*checkItem),
@@ -285,8 +289,18 @@ func (t *closeTracker) checkFuncCheckArg(
 	item *checkItem,
 	targetTypes []types.Type,
 ) (ok bool) {
-	f := call.StaticCallee()
+	var f *ssa.Function
+	dynCall, ok := call.Value.(*ssa.Call)
+	if !ok {
+		f = call.StaticCallee()
+	} else {
+		f = dynCall.Call.StaticCallee()
+	}
+
 	argIdx := slices.Index(call.Args, item.v)
+	if argIdx == -1 {
+		return false
+	}
 	if argIdx >= len(f.Params) {
 		// TODO: functions whose source code cannot be accessed will have zero params
 		if len(f.Params) == 0 {

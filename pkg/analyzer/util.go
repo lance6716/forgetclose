@@ -60,8 +60,6 @@ func receiverOfClose(call ssa.CallCommon) ssa.Value {
 }
 
 func resolveInTypes(t types.Type, targetTypes []types.Type) bool {
-	// for simplicity, only de-underlying once
-	t = t.Underlying()
 	// dereference pointer, because we want to check both T.Close and (*T).Close
 	if ptr, ok := t.(*types.Pointer); ok {
 		t = ptr.Elem()
