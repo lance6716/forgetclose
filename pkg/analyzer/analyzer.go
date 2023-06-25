@@ -18,8 +18,8 @@ const isDebug = false
 var debugMu sync.Mutex
 
 type CheckType struct {
-	PkgPath    string
-	StructName string
+	PkgPath  string
+	TypeName string
 }
 
 type closeTracker struct {
@@ -485,7 +485,7 @@ func getCheckItemFromCall(instr ssa.Instruction, targetTypes []types.Type) *chec
 	if ret.v != nil && ret.v.Referrers() != nil {
 		ret.refs = *ret.v.Referrers()
 	}
-	if ifErrIdx != -1 {
+	if ifErrIdx != -1 && ifErr != nil {
 		// TODO: ugly check Store to named return. Can we unify the processing for v?
 		ret.ifErr = ifErr
 		refs := *ifErr.Referrers()

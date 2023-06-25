@@ -26,3 +26,13 @@ func TestCustomInterface(t *testing.T) {
 	checker := NewAnalyzer(types)
 	analysistest.Run(t, testdata, checker, "interfacetest", "importee")
 }
+
+func TestNotDirectImport(t *testing.T) {
+	testdata := analysistest.TestData()
+
+	types := []CheckType{
+		{"importee", "Closer"},
+	}
+	checker := NewAnalyzer(types)
+	analysistest.Run(t, testdata, checker, "interfacetest2", "importee", "proxy")
+}

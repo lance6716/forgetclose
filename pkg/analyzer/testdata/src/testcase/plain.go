@@ -172,3 +172,7 @@ func shadow() {
 	}
 	defer rows.Close()
 }
+
+func notUse() {
+	db.Query("SELECT name FROM users") // want ".*not closed!"
+}

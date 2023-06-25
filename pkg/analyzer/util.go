@@ -19,7 +19,7 @@ func getTargetTypes(ssaPkg *ssa.Package, checkTypes []CheckType) []types.Type {
 			continue
 		}
 
-		pkgType := pkg.Type(t.StructName)
+		pkgType := pkg.Type(t.TypeName)
 		if pkgType == nil {
 			continue
 		}

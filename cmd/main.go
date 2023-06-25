@@ -2,9 +2,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"strings"
 
-	"forgetclose/pkg/analyzer"
+	"github.com/lance6716/forgetclose/pkg/analyzer"
 	"golang.org/x/tools/go/analysis/singlechecker"
 )
 
@@ -13,13 +14,13 @@ var checkTypes = flag.String("type", "", `dot separated list of types to check, 
 func main() {
 	flag.Parse()
 	if checkTypes == nil || *checkTypes == "" {
-		println("no type specified")
+		fmt.Println("no type specified")
 		return
 	}
-	fields := strings.Split(*checkTypes, ".")
+	dotIdx := strings.LastIndex(*checkTypes, ".")
 	types := []analyzer.CheckType{{
-		PkgPath:    fields[0],
-		StructName: fields[1],
+		PkgPath:  (*checkTypes)[:dotIdx],
+		TypeName: (*checkTypes)[dotIdx+1:],
 	}}
 	singlechecker.Main(analyzer.NewAnalyzer(types))
 }

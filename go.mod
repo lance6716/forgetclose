@@ -1,4 +1,4 @@
-module forgetclose
+module github.com/lance6716/forgetclose
 
 go 1.20
 
